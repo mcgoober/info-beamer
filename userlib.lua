@@ -537,6 +537,13 @@ function require(modname)
     return package.loaded[modname]
 end
 
+function util.json_watch(filename, handler)
+    util.file_watch(filename, function(content)
+        local json = require "json"
+        handler(json.decode(content))
+    end)
+end
+
 function util.init_hosted()
     local json = require "json"
     local hosted = nil
