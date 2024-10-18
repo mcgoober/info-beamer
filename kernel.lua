@@ -255,6 +255,8 @@ function create_sandbox()
 
         sys = {
             now = now;
+            date = os.date;
+            time = os.time;
             exit = function()
                 kprint("sys.exit not supported")
             end;
@@ -491,6 +493,8 @@ package = nil
 module = nil
 os = {
     getenv = os.getenv;
+    date = os.date;
+    time = os.time;
 }
 dofile = nil
 debug = {
