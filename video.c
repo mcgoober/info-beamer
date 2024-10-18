@@ -78,7 +78,7 @@ static void video_free(video_t *video) {
 
 static int video_open(video_t *video, const char *filename) {
     video->finished = 0;
-    video->format = PIX_FMT_RGB24;
+    video->format = AV_PIX_FMT_RGB24;
 
     if (avformat_open_input(&video->format_context, filename, NULL, NULL) ||
             avformat_find_stream_info(video->format_context, NULL) < 0) {
@@ -143,8 +143,8 @@ static int video_open(video_t *video, const char *filename) {
     fprintf(stderr, INFO("fps: %lf\n"), video->fps);
 
     /* Get framebuffers */
-    video->raw_frame = avcodec_alloc_frame();
-    video->scaled_frame = avcodec_alloc_frame();
+    video->raw_frame = av_frame_alloc();
+    video->scaled_frame = av_frame_alloc();
 
     if (!video->raw_frame || !video->scaled_frame) {
         fprintf(stderr, ERROR("cannot preallocate frames\n"));
