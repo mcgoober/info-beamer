@@ -35,6 +35,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 
 #include "misc.h"
 #include "shader.h"
@@ -42,7 +43,7 @@
 typedef struct {
     AVFormatContext *format_context;
     AVCodecContext *codec_context;
-    AVCodec *codec;
+    const AVCodec *codec;
     AVFrame *raw_frame;
     AVFrame *scaled_frame;
     uint8_t *buffer;
@@ -68,8 +69,10 @@ static void video_free(video_t *video) {
     if (video->scaled_frame)
         av_free(video->scaled_frame);
 
-    if (video->codec_context)
+    if (video->codec_context) {
         avcodec_close(video->codec_context);
+        avcodec_free_context(&(video->codec_context));
+    }
     if (video->format_context)
         avformat_close_input(&video->format_context);
 
@@ -88,7 +91,7 @@ static int video_open(video_t *video, const char *filename) {
 
     video->stream_idx = -1;
     for (int i = 0; i < video->format_context->nb_streams; i++) {
-        if (video->format_context->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (video->format_context->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             video->stream_idx = i;
             break;
         }
@@ -100,8 +103,19 @@ static int video_open(video_t *video, const char *filename) {
     }
 
     AVStream *stream = video->format_context->streams[video->stream_idx];
-    video->codec_context = stream->codec;
-    video->codec = avcodec_find_decoder(video->codec_context->codec_id);
+    
+    video->codec = avcodec_find_decoder(stream->codecpar->codec_id);
+
+    video->codec_context = avcodec_alloc_context3(video->codec);
+    if (!video->codec_context) {
+        fprintf(stderr, ERROR("Could not allocate video codec context\n"));
+        goto failed;
+    }
+
+    if (avcodec_parameters_to_context(video->codec_context, stream->codecpar) < 0) {
+        fprintf(stderr, ERROR("cannot initialize the decoder context\n"));
+        goto failed;
+    }
 
     /* Save Width/Height */
     video->width = video->codec_context->width;
@@ -152,19 +166,22 @@ static int video_open(video_t *video, const char *filename) {
     }
 
     /* Create data buffer */
-    video->buffer = av_malloc(avpicture_get_size(
+    video->buffer = av_malloc(av_image_get_buffer_size(
         video->format, 
         video->buffer_width, 
-        video->buffer_height
+        video->buffer_height,
+        1
     ));
 
     /* Init buffers */
-    avpicture_fill(
-        (AVPicture *) video->scaled_frame, 
+    av_image_fill_arrays(
+        video->scaled_frame->data,
+        video->scaled_frame->linesize,
         video->buffer, 
         video->format, 
         video->buffer_width, 
-        video->buffer_height
+        video->buffer_height,
+        1
     );
 
     /* Init scale & convert */
@@ -195,33 +212,51 @@ failed:
 }
 
 static int video_next_frame(video_t *video) {
-    AVPacket packet;
-    av_init_packet(&packet);
+    AVPacket* packet = av_packet_alloc();    
+    if (!packet) {
+        fprintf(stderr, ERROR("unable to allocate packet\n"));
+        return 0;
+    }
 
 again:
     /* Can we read a frame? */
-    if (av_read_frame(video->format_context, &packet)) {
+    if (av_read_frame(video->format_context, packet)) {
         fprintf(stderr, "no next frame\n");
         video->finished = 1;
-        av_free_packet(&packet);
+        av_packet_unref(packet);
         return 0;
     }
 
     /* Is it what we're trying to parse? */
-    if (packet.stream_index != video->stream_idx) {
+    if (packet->stream_index != video->stream_idx) {
         // fprintf(stderr, "not video\n");
-        av_free_packet(&packet);
+        av_packet_unref(packet);
         goto again;
     }
 
-    /* Decode it! */
+    int ret;
     int complete_frame = 0;
-    avcodec_decode_video2(video->codec_context, video->raw_frame, &complete_frame, &packet);
+    if (video->codec_context->codec_type == AVMEDIA_TYPE_VIDEO) {
+        ret = avcodec_send_packet(video->codec_context, packet);
+        if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+            fprintf(stderr, "codec: sending video packet failed (%d)\n", ret);
+            av_packet_unref(packet);
+            return 0;
+        }
+        ret = avcodec_receive_frame(video->codec_context, video->raw_frame);
+        if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+            fprintf(stderr, "codec: receiving video frame failed (%d)\n", ret);
+            av_packet_unref(packet);
+            return 0;
+        }
+        if (ret >= 0)
+            complete_frame = 1;        
+    }
 
     /* Success? If not, drop packet. */
     if (!complete_frame) {
         fprintf(stderr, ERROR("incomplete video packet\n"));
-        av_free_packet(&packet);
+        av_packet_unref(packet);
         goto again;
     }
 
@@ -251,7 +286,7 @@ again:
         video->scaled_frame->data, 
         video->scaled_frame->linesize
     );
-    av_free_packet(&packet);
+    av_packet_unref(packet);
     return 1;
 }
 

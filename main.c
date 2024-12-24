@@ -1512,8 +1512,6 @@ int main(int argc, char *argv[]) {
     if (inotify_fd == -1)
         die("cannot open inotify: %s", strerror(errno));
 
-    av_register_all();
-
     event_base = event_init();
     dns_base = evdns_base_new(event_base, 1);
 
